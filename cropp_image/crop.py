@@ -17,6 +17,8 @@ app = Sanic(__name__)
 ydb_driver: ydb.Driver
 config: dict
 
+ACCESS_KEY=os.environ['ACCESS_KEY']
+SECRET_KEY=os.environ['SECRET_KEY']
 
 
 @app.after_server_start
@@ -27,11 +29,13 @@ async def after_server_start(app, loop):
         'PHOTO_BUCKET': os.environ['PHOTOS_BUCKET'],
         'FACE_BUCKET': os.environ['FACES_BUCKET'],
         'DB_ENDPOINT': os.environ["DB_ENDPOINT"],
-        'DB_PATH': os.environ["DB_PATH"]
+        'DB_DATABASE': os.environ["DB_DATABASE"]
     }
     global ydb_driver
+    print('start')
     ydb_driver = initDb()
     ydb_driver.wait(timeout=5)
+
 
 @app.post("/")
 async def hello(request):
@@ -53,7 +57,6 @@ async def shutdown():
 def insertPhotoToDb(original_id, face_id):
     rand = random.Random()
     query = f"""
-    PRAGMA TablePathPrefix("{config['DB_PATH']}");
     INSERT INTO photo (id, original_id, face_id)
     VALUES ({rand.getrandbits(64)}, '{original_id}', '{face_id}');
     """
@@ -66,9 +69,11 @@ def getPhoto(bucket, key):
     session = boto3.session.Session()
     s3 = session.client(
         service_name='s3',
+        aws_access_key_id=ACCESS_KEY,
+        aws_secret_access_key=SECRET_KEY,
         endpoint_url='https://storage.yandexcloud.net'
     )
-  
+    
     response = s3.get_object(
         Bucket=bucket,
         Key=key
@@ -80,6 +85,8 @@ def putPhoto(bucket, key, content):
     session = boto3.session.Session()
     s3 = session.client(
         service_name='s3',
+        aws_access_key_id=ACCESS_KEY,
+        aws_secret_access_key=SECRET_KEY,
         endpoint_url='https://storage.yandexcloud.net'
     )
   
@@ -92,10 +99,10 @@ def putPhoto(bucket, key, content):
 
 def initDb():
     endpoint = config["DB_ENDPOINT"]
-    path = config["DB_PATH"]
+    database = config["DB_DATABASE"]
     creds = ydb.iam.MetadataUrlCredentials()
     driver_config = ydb.DriverConfig(
-        endpoint, path, credentials=creds
+        endpoint,database,credentials=creds
     )
     return ydb.Driver(driver_config)
 

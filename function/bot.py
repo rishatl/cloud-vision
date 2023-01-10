@@ -1,11 +1,24 @@
-import telegram
+import asyncio
+import json
+import logging
 import os
+
+from aiogram import Bot, Dispatcher, types
 import ydb
 import ydb.iam
-import json
+
+
+# Logger initialization and logging level setting
+log = logging.getLogger(__name__)
+log.setLevel(os.environ.get('LOGGING_LEVEL', 'INFO').upper())
+
+# Handlers
+async def start(message: types.Message):
+    await message.reply('Hello, {}!'.format(message.from_user.first_name))
 
 TOKEN = os.getenv("BOT_TOKEN")
-BOT = telegram.Bot(token=TOKEN)
+BOT  = Bot(TOKEN)
+dp = Dispatcher(BOT)
 driver: ydb.Driver
 PHOTO_LINK_TEMPLATE = os.getenv("PHOTO_LINK_TEMPLATE")
 OBJECT_LINK_TEMPLATE = os.getenv("OBJECT_LINK_TEMPLATE")
@@ -21,23 +34,11 @@ def get_driver():
     return ydb.Driver(driver_config)
 
 
-def get_face(chat_id):
-    query = f"""
-    PRAGMA TablePathPrefix("{os.getenv("DB_PATH")}");
-    SELECT * FROM photo WHERE name is NULL LIMIT 1;
-    """
-    session = driver.table_client.session().create()
-    result_sets = session.transaction().execute(query, commit_tx=True)
-    session.closing()
-    for row in result_sets[0].rows:
-        face_id = row.face_id
-        photo_url = PHOTO_LINK_TEMPLATE.format(face_id)
-        BOT.send_photo(chat_id=chat_id, photo=photo_url)
+
 
 
 def add_name_to_last_photo(name):
     query = f"""
-        PRAGMA TablePathPrefix("{os.getenv("DB_PATH")}");
         SELECT * FROM photo WHERE name is NULL LIMIT 1;
         """
     session = driver.table_client.session().create()
@@ -48,52 +49,85 @@ def add_name_to_last_photo(name):
     if face_id == '':
         return
     query = f"""
-    PRAGMA TablePathPrefix("{os.getenv("DB_PATH")}");
     UPDATE photo SET name = '{name}' WHERE face_id = '{face_id}';
     """
     session.transaction().execute(query, commit_tx=True)
     session.closing()
 
 
-def find(chat_id, name):
+async def find(message: types.Message):
+    
     query = f"""
-    PRAGMA TablePathPrefix("{os.getenv("DB_PATH")}");
     SELECT DISTINCT original_id, name FROM photo WHERE name = '{name}';
     """
     session = driver.table_client.session().create()
     result_sets = session.transaction().execute(query, commit_tx=True)
     session.closing()
     if len(result_sets[0].rows) == 0:
-        BOT.sendMessage(chat_id, text=f'No photos with {name}')
+        await message.answer(f'No photos with {name}')
     for row in result_sets[0].rows:
         object_id = row.original_id
         photo_url = OBJECT_LINK_TEMPLATE.format(object_id)
-        BOT.send_photo(chat_id=chat_id, photo=photo_url)
+        await message.answer_photo(photo=photo_url)
+
 
 
 def set_up():
     global driver
     driver = get_driver()
     driver.wait(timeout=5)
+    
 
+async def echo(message: types.Message):
+    await message.answer(message.text)
 
-def handler(event, context):
-    set_up()
-    request = event['body']
-    update = telegram.Update.de_json(json.loads(request), BOT)
-
-    chat_id = update.message.chat.id
-    command = update.message.text.encode('utf-8').decode()
-
-    if command == '/start':
-        BOT.sendMessage(chat_id=chat_id, text='Hello)')
+async def get_face(message: types.Message):
+    query = f"""
+    SELECT * FROM photo WHERE name is NULL LIMIT 1;
+    """
+    session = driver.table_client.session().create()
+    result_sets = session.transaction().execute(query, commit_tx=True)
+    session.closing()
+    for row in result_sets[0].rows:
+        face_id = row.face_id
+        photo_url = PHOTO_LINK_TEMPLATE.format(face_id)
+        await message.answer_photo(photo=photo_url)
         return
-    if command == '/getface':
-        get_face(chat_id)
-        return
-    if command.startswith('/find'):
-        args = command.split(' ')
-        find(chat_id, args[1])
-        return
-    add_name_to_last_photo(command)
-    BOT.sendMessage(chat_id=chat_id, text=f'Added new name {command}')
+
+
+# Functions for Yandex.Cloud
+async def register_handlers(dp: Dispatcher):
+    """Registration all handlers before processing update."""
+
+    dp.register_message_handler(start, commands=['start'])
+    dp.register_message_handler(get_face, commands=['getface'])
+
+    log.debug('Handlers are registered.')
+
+
+async def process_event(event, dp: Dispatcher):
+    """
+    Converting an Yandex.Cloud functions event to an update and
+    handling tha update.
+    """
+
+    update = json.loads(event['body'])
+    log.debug('Update: ' + str(update))
+
+    Bot.set_current(dp.bot)
+    update = types.Update.to_object(update)
+    await dp.process_update(update)
+
+async def handler(event, context):
+    """Yandex.Cloud functions handler."""
+
+    if event['httpMethod'] == 'POST':
+        BOT  = Bot(TOKEN)
+        dp = Dispatcher(BOT)
+        set_up()
+
+        await register_handlers(dp)
+        await process_event(event, dp)
+
+        return {'statusCode': 200, 'body': 'ok'}
+    return {'statusCode': 405}
